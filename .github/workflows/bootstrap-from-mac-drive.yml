@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: codex-limit-guard-bootstrap
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   bootstrap-and-validate:
