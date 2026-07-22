@@ -1,0 +1,31 @@
+name: Export branch for local access
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pack exact checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar --exclude=.git -czf /tmp/Codex-Limit-Guard-russian-branch.tar.gz .
+          sha256sum /tmp/Codex-Limit-Guard-russian-branch.tar.gz > /tmp/Codex-Limit-Guard-russian-branch.tar.gz.sha256
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-Limit-Guard-russian-branch-source
+          path: |
+            /tmp/Codex-Limit-Guard-russian-branch.tar.gz
+            /tmp/Codex-Limit-Guard-russian-branch.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 1
