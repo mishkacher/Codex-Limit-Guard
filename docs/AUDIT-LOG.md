@@ -23,7 +23,7 @@ This is a focused engineering review record for the initial public foundation. I
 | 17 | UI state consistency | Settings view could instantiate a second settings object | All views now bind to the canonical `AppModel.settings` instance |
 | 18 | macOS compatibility | Some UI and notification APIs required macOS 14 or special entitlements | Replaced with macOS 13-compatible, entitlement-free alternatives |
 | 19 | Packaging and supply chain | Public project needed reproducible app bundle and checksums | Build, install, audit, CI, and release scripts added |
-| 20 | Final regression | Re-ran core tests, static safety assertions, docs and packaging checks | Passed locally for the platform-independent core; macOS build is enforced in CI |
+| 20 | Final regression | Re-ran tests, safety assertions, native compilation, docs, and packaging | Passed on macOS CI; verified native `.app` bundle uploaded as an artifact |
 
 ## Current automated coverage
 
@@ -34,9 +34,13 @@ This is a focused engineering review record for the initial public foundation. I
 - warning, block, soft-stop, hard-stop, grace, recovery, and re-arm behavior;
 - bearer and Telegram token redaction.
 
+## Validation evidence
+
+The final macOS gate compiles the SwiftUI/AppKit target with Swift 5.10, runs all package tests, executes the static safety audit, ad-hoc signs the application, verifies its bundle structure, and uploads the resulting ZIP. The production CI repeats this on pull requests and `main`, with an additional Linux core-test job under Swift 6.
+
 ## Residual risks
 
 - Accessibility selectors can drift after a Codex UI update.
-- Linux cannot compile AppKit/SwiftUI targets; the repository's macOS CI job is the authoritative application build check.
 - Community release artifacts are not notarized until a signing identity is configured.
 - New-task prevention is best effort between observations, not a kernel-level or API-level lock.
+- A real-device smoke test is still required whenever Codex or ChatGPT materially changes its Accessibility tree.
