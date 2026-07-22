@@ -25,7 +25,7 @@ jobs:
         shell: bash
         env:
           ARCHIVE_NAME: Codex-Limit-Guard-0.2.0-local-source.tar.gz
-          EXPECTED_SHA256: 5d92ca84e2c8ecb80a22ddc8476131698ad5c386ba38c718f3a69c49dd650ae8
+          EXPECTED_SHA256: 51edda6148e499c33454551c2888ef0d61712df012d2a4665d38e1a8bd02e27e
         run: |
           set -euo pipefail
           sw_vers
