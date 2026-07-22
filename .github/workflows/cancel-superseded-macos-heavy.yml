@@ -1,0 +1,18 @@
+name: Cancel superseded macOS heavy job
+
+on:
+  push:
+    branches: [agent/russian-localization-hardening]
+    paths: [.github/workflows/cancel-superseded-macos-heavy.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  supersede-old-heavy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: codex-limit-guard-macos-heavy
+      cancel-in-progress: true
+    steps:
+      - run: echo 'Superseded autonomous macOS heavy job cancelled by concurrency.'
