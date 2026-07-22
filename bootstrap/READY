@@ -1,4 +1,4 @@
 archive_sha256=f7f8d04a5f42bcfae0990a80b3893de82803c6dcd7a02f084b2a7a8f9c7ba5f0
 base64_sha256=654d0335bf50608bf1f867fa4540bc35a3a8f4a9eb844c91309c1245591cee5d
 chunks=9
-trigger=pull-request-macos-audit-3
+trigger=pull-request-macos-audit-4
