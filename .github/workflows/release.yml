@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: swift test --parallel
+      - name: Run safety audit
+        run: ./scripts/audit.sh --skip-tests
+      - name: Build application
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: ./scripts/build-app.sh
+      - name: Verify application bundle
+        run: ./scripts/verify-app.sh
+      - name: Create checksum
+        run: shasum -a 256 dist/Codex-Limit-Guard-macOS.zip > dist/Codex-Limit-Guard-macOS.zip.sha256
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          dist/Codex-Limit-Guard-macOS.zip
+          dist/Codex-Limit-Guard-macOS.zip.sha256
+          --generate-notes
+          --title "Codex Limit Guard $GITHUB_REF_NAME"
