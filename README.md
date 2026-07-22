@@ -10,7 +10,7 @@
   [![CI](https://github.com/mishkacher/Codex-Limit-Guard/actions/workflows/ci.yml/badge.svg)](https://github.com/mishkacher/Codex-Limit-Guard/actions/workflows/ci.yml)
   [![Release](https://img.shields.io/github/v/release/mishkacher/Codex-Limit-Guard?display_name=tag&sort=semver)](https://github.com/mishkacher/Codex-Limit-Guard/releases)
   [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-111827?logo=apple)](https://www.apple.com/macos/)
-  [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](https://www.swift.org/)
+  [![Swift 5.10+](https://img.shields.io/badge/Swift-5.10%2B-F05138?logo=swift&logoColor=white)](https://www.swift.org/)
   [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
 </div>
 
