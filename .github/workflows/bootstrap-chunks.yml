@@ -32,7 +32,7 @@ jobs:
           cat bootstrap/chunk-* > /tmp/project.tar.gz.b64
           actual_b64="$(shasum -a 256 /tmp/project.tar.gz.b64 | awk '{print $1}')"
           test "$actual_b64" = "$expected_b64"
-          base64 -D /tmp/project.tar.gz.b64 > /tmp/codex-limit-guard-project.tar.gz
+          base64 -D < /tmp/project.tar.gz.b64 > /tmp/codex-limit-guard-project.tar.gz
           actual_archive="$(shasum -a 256 /tmp/codex-limit-guard-project.tar.gz | awk '{print $1}')"
           test "$actual_archive" = "$expected_archive"
           tar -xzf /tmp/codex-limit-guard-project.tar.gz -C .
