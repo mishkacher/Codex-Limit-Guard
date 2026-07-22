@@ -1,0 +1,42 @@
+name: Mac runner transport probe
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'agent/russian-localization-hardening'
+    runs-on: [self-hosted, macOS, ARM64, backtest]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/russian-localization-hardening
+          clean: true
+      - name: Verify runner and locate archive
+        shell: bash
+        env:
+          ARCHIVE_NAME: Codex-Limit-Guard-0.2.0-local-source.tar.gz
+          EXPECTED_SHA256: 1eeb92b6678b3738d43bb82a24b1cb174fe2f8ba627a3c8edb0bec7efae68351
+        run: |
+          set -euo pipefail
+          sw_vers
+          uname -a
+          test "$(uname -m)" = "arm64"
+          roots=("$HOME/Library/CloudStorage" "$HOME/Google Drive" "$HOME/Downloads" "$HOME/Desktop")
+          archive=""
+          for root in "${roots[@]}"; do
+            if [[ -d "$root" ]]; then
+              candidate="$(find "$root" -type f -name "$ARCHIVE_NAME" -print -quit 2>/dev/null || true)"
+              if [[ -n "$candidate" ]]; then archive="$candidate"; break; fi
+            fi
+          done
+          test -n "$archive"
+          actual_sha="$(shasum -a 256 "$archive" | awk '{print $1}')"
+          echo "archive_name=$(basename "$archive")"
+          echo "archive_sha256=$actual_sha"
+          test "$actual_sha" = "$EXPECTED_SHA256"
