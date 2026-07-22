@@ -1,0 +1,40 @@
+name: Mac runner transport probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, backtest]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/russian-localization-hardening
+          clean: true
+      - name: Verify runner and locate archive
+        shell: bash
+        env:
+          ARCHIVE_NAME: Codex-Limit-Guard-0.2.0-local-source.tar.gz
+          EXPECTED_SHA256: 51edda6148e499c33454551c2888ef0d61712df012d2a4665d38e1a8bd02e27e
+        run: |
+          set -euo pipefail
+          sw_vers
+          uname -a
+          test "$(uname -m)" = "arm64"
+          roots=("$HOME/Library/CloudStorage" "$HOME/Google Drive" "$HOME/Downloads" "$HOME/Desktop")
+          archive=""
+          for root in "${roots[@]}"; do
+            if [[ -d "$root" ]]; then
+              candidate="$(find "$root" -type f -name "$ARCHIVE_NAME" -print -quit 2>/dev/null || true)"
+              if [[ -n "$candidate" ]]; then archive="$candidate"; break; fi
+            fi
+          done
+          test -n "$archive"
+          actual_sha="$(shasum -a 256 "$archive" | awk '{print $1}')"
+          echo "archive_name=$(basename "$archive")"
+          echo "archive_sha256=$actual_sha"
+          test "$actual_sha" = "$EXPECTED_SHA256"

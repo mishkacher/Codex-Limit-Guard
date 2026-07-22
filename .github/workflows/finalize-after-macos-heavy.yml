@@ -1,0 +1,150 @@
+name: Finalize branch after confirmed macOS heavy gate
+
+on:
+  push:
+    branches: [agent/russian-localization-hardening]
+    paths: [docs/validation/MACOS_ARM64_HEAVY_V3_PASS.md]
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: write
+
+jobs:
+  final-audit-and-cleanup:
+    if: github.repository == 'mishkacher/Codex-Limit-Guard'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/russian-localization-hardening
+          fetch-depth: 0
+          clean: true
+      - name: Require authentic Mac evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s docs/validation/MACOS_ARM64_HEAVY_V3_PASS.md
+          grep -Fq 'Final macOS ARM64 heavy gate v3 — PASSED' docs/validation/MACOS_ARM64_HEAVY_V3_PASS.md
+          test -f Package.swift
+          test -d Sources
+          test -d Tests
+          ! find . -maxdepth 1 -name 'bootstrap*' -print -quit | grep -q .
+      - name: Independent final remote regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test --parallel
+          swift test --enable-code-coverage
+          ./scripts/audit.sh --skip-tests
+          if grep -RInE --exclude-dir=.git --exclude-dir=.build \
+            '(^|[^A-Za-z])(killall[[:space:]]+codex|pkill[[:space:]].*-f[[:space:]].*codex)' .; then
+            exit 1
+          fi
+          git diff --check
+      - name: Audit pull request state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            gh pr view 6 --repo "$GITHUB_REPOSITORY" \
+              --json state,isDraft,mergeable,mergeStateStatus,headRefName,baseRefName,reviews \
+              > /tmp/pr.json
+            mergeable="$(python3 -c 'import json; print(json.load(open("/tmp/pr.json"))["mergeable"])')"
+            [[ "$mergeable" != UNKNOWN ]] && break
+            sleep 5
+          done
+          python3 - <<'PY'
+          import json, sys
+          p=json.load(open('/tmp/pr.json'))
+          assert p['state']=='OPEN', p
+          assert p['isDraft'] is True, p
+          assert p['headRefName']=='agent/russian-localization-hardening', p
+          assert p['baseRefName']=='main', p
+          assert p['mergeable']=='MERGEABLE', p
+          blocking=[r for r in (p.get('reviews') or []) if r.get('state')=='CHANGES_REQUESTED']
+          assert not blocking, blocking
+          PY
+      - name: Remove temporary transport and orchestration workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/bootstrap-from-mac-drive.yml \
+            .github/workflows/mac-runner-probe.yml \
+            .github/workflows/restore-verified-source.yml \
+            .github/workflows/macos-heavy-autonomous.yml \
+            .github/workflows/remote-fast-medium-autonomous.yml \
+            .github/workflows/remote-fast-medium-gate-v2.yml \
+            .github/workflows/remote-fast-medium-gate-v3.yml \
+            .github/workflows/macos-heavy-gate-v2.yml \
+            .github/workflows/mac-runner-probe-v2.yml \
+            .github/workflows/collect-validation-status.yml \
+            .github/workflows/collect-validation-status-v2.yml \
+            .github/workflows/collect-validation-status-v3.yml \
+            .github/workflows/remote-swift-container-gate.yml \
+            .github/workflows/cancel-superseded-macos-heavy.yml \
+            .github/workflows/macos-heavy-gate-v3.yml \
+            .github/workflows/remote-final-gate.yml \
+            .github/workflows/final-github-audit-status.yml \
+            .github/workflows/finalize-after-macos-heavy.yml
+          ! grep -RInE --include='*.yml' --include='*.yaml' 'pull_request_target' .github/workflows
+          ! grep -RInE --include='*.yml' --include='*.yaml' 'runs-on:[[:space:]]*self-hosted[[:space:]]*$' .github/workflows
+      - name: Create verified final audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          head="$(git rev-parse HEAD)"
+          mkdir -p docs/validation
+          cat > docs/validation/FINAL_GITHUB_AUDIT_VERIFIED.md <<EOF
+          # Final GitHub audit — VERIFIED
+
+          **CODEX LIMIT GUARD — RELEASE CANDIDATE, GITHUB VERIFIED**
+
+          - Source head before finalization: \`$head\`
+          - Final audit UTC: \`$(date -u +%FT%TZ)\`
+          - Draft PR: \`#6\`
+          - Base: \`main\`
+          - Pull request: open, Draft and mergeable
+          - Blocking requested-changes reviews: none
+          - macOS ARM64 heavy gate v3 marker: present and validated
+          - Independent final remote tests: passed
+          - Independent coverage build: passed
+          - Static/process-safety audit: passed
+          - Broad process-kill scan: passed
+          - Workflow security scan: passed
+          - Temporary transport/orchestration workflows: removed
+          - Merge: not performed
+          - Production release: not published
+
+          This status authorizes neither merge nor production release. Both require a separate direct owner instruction.
+          Developer ID signing and notarization remain limited by the availability of valid Apple credentials.
+          EOF
+      - name: Commit final clean branch safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'Finalize GitHub-verified release candidate branch'
+          for attempt in 1 2 3; do
+            if git push origin HEAD:agent/russian-localization-hardening; then exit 0; fi
+            git fetch origin agent/russian-localization-hardening
+            git rebase origin/agent/russian-localization-hardening
+            sleep $((attempt * 3))
+          done
+          exit 1
+      - name: Comment Draft PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh pr comment 6 --repo "$GITHUB_REPOSITORY" \
+            --body-file docs/validation/FINAL_GITHUB_AUDIT_VERIFIED.md

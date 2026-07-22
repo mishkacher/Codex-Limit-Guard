@@ -1,0 +1,157 @@
+name: Autonomous remote fast and medium gate
+
+on:
+  push:
+    branches:
+      - agent/russian-localization-hardening
+    paths:
+      - .github/workflows/remote-fast-medium-autonomous.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'mishkacher/Codex-Limit-Guard'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: codex-limit-guard-remote-fast-medium
+      cancel-in-progress: true
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/russian-localization-hardening
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+
+      - name: Wait for verified clean source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            git fetch origin agent/russian-localization-hardening --quiet
+            git reset --hard origin/agent/russian-localization-hardening --quiet
+            count="$(find . -type f -not -path './.git/*' | wc -l | tr -d ' ')"
+            if [[ -f Package.swift && -d Sources && -d Tests ]] \
+               && (( count >= 100 )) \
+               && ! find . -maxdepth 1 -name 'bootstrap*' -print -quit | grep -q .; then
+              echo "Validated source tree at $(git rev-parse HEAD), files=$count"
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
+
+      - name: Environment and repository integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/logs artifacts/reports
+          {
+            echo "head=$(git rev-parse HEAD)"
+            echo "uname=$(uname -a)"
+            echo "swift=$(swift --version | head -n 1)"
+            echo "git=$(git --version)"
+            echo "files=$(find . -type f -not -path './.git/*' | wc -l | tr -d ' ')"
+          } | tee artifacts/reports/environment.txt
+          git diff --check
+          test -z "$(git status --porcelain)"
+
+      - name: Full tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test --parallel 2>&1 | tee artifacts/logs/swift-test.log
+
+      - name: Coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test --enable-code-coverage 2>&1 | tee artifacts/logs/swift-coverage-test.log
+          BIN_PATH="$(swift build --show-bin-path)"
+          XCTEST="$(find "$BIN_PATH" -maxdepth 1 -type f -name '*.xctest' -print -quit)"
+          PROFDATA="$(find .build -name default.profdata -print -quit)"
+          if [[ -n "$XCTEST" && -n "$PROFDATA" ]]; then
+            llvm-cov report "$XCTEST" -instr-profile "$PROFDATA" \
+              -ignore-filename-regex='Tests|\.build' \
+              | tee artifacts/reports/coverage.txt || true
+          fi
+
+      - name: Static, security and process-safety audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/audit.sh --skip-tests 2>&1 | tee artifacts/logs/static-audit.log
+          ! grep -RInE --exclude-dir=.git --exclude-dir=.build \
+             '(^|[^A-Za-z])(killall[[:space:]]+codex|pkill[[:space:]].*-f[[:space:]].*codex)' . \
+             | tee artifacts/logs/broad-kill-scan.txt
+          ! grep -RInE --exclude-dir=.git --exclude-dir=.build \
+             '(sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})' . \
+             | tee artifacts/logs/secret-scan.txt
+
+      - name: CLI smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN_PATH="$(swift build --show-bin-path)"
+          CLI="$(find "$BIN_PATH" -maxdepth 1 -type f -perm -111 -name 'codex-limit-guard' -print -quit)"
+          if [[ -z "$CLI" ]]; then
+            CLI="$(find "$BIN_PATH" -maxdepth 1 -type f -perm -111 -iname '*LimitGuard*CLI*' -print -quit)"
+          fi
+          test -n "$CLI"
+          "$CLI" --help | tee artifacts/logs/cli-help.log
+          "$CLI" version | tee artifacts/logs/cli-version.log
+          set +e
+          "$CLI" status --json > artifacts/reports/cli-status.json
+          code=$?
+          set -e
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('artifacts/reports/cli-status.json')
+          if p.stat().st_size:
+              json.loads(p.read_text())
+          PY
+          echo "status_exit_code=$code" | tee artifacts/reports/cli-exit-code.txt
+
+      - name: Critical-domain repetition
+        shell: bash
+        run: |
+          set -euo pipefail
+          for iteration in $(seq 1 10); do
+            swift test --filter PolicyEngineTests >/tmp/policy.log 2>&1
+            swift test --filter ProcessActionExecutorTests >/tmp/process-action.log 2>&1
+            swift test --filter ProcessSafetyTests >/tmp/process-safety.log 2>&1
+          done
+          echo "10 iterations / 30 critical suite invocations passed" \
+            | tee artifacts/reports/critical-repeat.txt
+
+      - name: Documentation and package checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in README.md ARCHITECTURE.md SECURITY.md PRIVACY.md CONTRIBUTING.md CHANGELOG.md TROUBLESHOOTING.md RELEASE.md LICENSE; do
+            test -s "$file" || { echo "Missing $file" >&2; exit 1; }
+          done
+          swift package dump-package > artifacts/reports/package-dump.json
+          python3 -m json.tool artifacts/reports/package-dump.json >/dev/null
+
+      - name: Record final state
+        if: always()
+        shell: bash
+        run: |
+          git rev-parse HEAD | tee artifacts/reports/tested-head.txt || true
+          git status --short | tee artifacts/logs/git-status-after.txt || true
+
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-Limit-Guard-fast-medium-${{ github.run_id }}
+          path: artifacts
+          if-no-files-found: warn
+          retention-days: 14
