@@ -1,0 +1,110 @@
+name: Remote fast and medium gate with evidence
+
+on:
+  push:
+    branches: [agent/russian-localization-hardening]
+    paths: [.github/workflows/remote-fast-medium-gate-v2.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-record:
+    if: github.repository == 'mishkacher/Codex-Limit-Guard' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/russian-localization-hardening
+          fetch-depth: 0
+          clean: true
+
+      - name: Verify restored source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f Package.swift
+          test -d Sources
+          test -d Tests
+          test -x scripts/audit.sh
+          count="$(find . -type f -not -path './.git/*' | wc -l | tr -d ' ')"
+          test "$count" -ge 100
+          ! find . -maxdepth 1 -name 'bootstrap*' -print -quit | grep -q .
+          git diff --check
+
+      - name: Run tests and coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/clg-evidence
+          swift test --parallel 2>&1 | tee /tmp/clg-evidence/swift-test.log
+          swift test --enable-code-coverage 2>&1 | tee /tmp/clg-evidence/coverage-test.log
+
+      - name: Run audit and critical repetition
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/audit.sh --skip-tests 2>&1 | tee /tmp/clg-evidence/audit.log
+          ! grep -RInE --exclude-dir=.git --exclude-dir=.build \
+            '(^|[^A-Za-z])(killall[[:space:]]+codex|pkill[[:space:]].*-f[[:space:]].*codex)' .
+          for iteration in $(seq 1 10); do
+            swift test --filter PolicyEngineTests >/dev/null
+            swift test --filter ProcessActionExecutorTests >/dev/null
+            swift test --filter ProcessSafetyTests >/dev/null
+          done
+
+      - name: CLI and documentation contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN_PATH="$(swift build --show-bin-path)"
+          CLI="$(find "$BIN_PATH" -maxdepth 1 -type f -perm -111 -name 'codex-limit-guard' -print -quit)"
+          if [[ -z "$CLI" ]]; then
+            CLI="$(find "$BIN_PATH" -maxdepth 1 -type f -perm -111 -iname '*LimitGuard*CLI*' -print -quit)"
+          fi
+          test -n "$CLI"
+          "$CLI" --help >/tmp/clg-evidence/cli-help.txt
+          "$CLI" version >/tmp/clg-evidence/cli-version.txt
+          for file in README.md ARCHITECTURE.md SECURITY.md PRIVACY.md CONTRIBUTING.md CHANGELOG.md TROUBLESHOOTING.md RELEASE.md LICENSE; do
+            test -s "$file"
+          done
+          swift package dump-package >/tmp/clg-evidence/package.json
+          python3 -m json.tool /tmp/clg-evidence/package.json >/dev/null
+
+      - name: Commit immutable success evidence
+        shell: bash
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          tested_head="$(git rev-parse HEAD)"
+          passed_tests="$(grep -Eo 'Executed [0-9]+ tests?' /tmp/clg-evidence/swift-test.log | tail -n1 || true)"
+          mkdir -p docs/validation
+          cat > docs/validation/REMOTE_FAST_MEDIUM_PASS.md <<EOF
+          # Remote fast/medium validation — PASSED
+
+          - Tested commit: \`$tested_head\`
+          - Workflow run: \`$RUN_ID\`
+          - Attempt: \`$RUN_ATTEMPT\`
+          - Runner: GitHub-hosted Ubuntu
+          - Swift: \`$(swift --version | head -n1)\`
+          - Completed UTC: \`$(date -u +%FT%TZ)\`
+          - Test summary: \`${passed_tests:-see workflow log}\`
+          - Coverage command: \`swift test --enable-code-coverage\` — passed
+          - Static audit: \`./scripts/audit.sh --skip-tests\` — passed
+          - Critical repetition: 10 iterations × 3 suites — passed
+          - CLI help/version and package JSON contracts — passed
+          - Broad process-kill scan — passed
+
+          This report was generated only after every preceding step completed successfully.
+          It does not replace the native macOS ARM64 heavy gate.
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/validation/REMOTE_FAST_MEDIUM_PASS.md
+          git diff --cached --check
+          git commit -m "Record passed remote fast and medium validation"
+          git push origin HEAD:agent/russian-localization-hardening
