@@ -1,0 +1,109 @@
+name: Final remote fast medium gate
+
+on:
+  push:
+    branches: [agent/russian-localization-hardening]
+    paths: [.github/workflows/remote-final-gate.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  final-remote:
+    if: github.repository == 'mishkacher/Codex-Limit-Guard' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    container: swift:6.0-jammy
+    timeout-minutes: 75
+    concurrency:
+      group: codex-limit-guard-final-remote
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/russian-localization-hardening
+          fetch-depth: 0
+          clean: true
+      - name: Freeze source and preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/clg-final
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git rev-parse HEAD | tee /tmp/clg-final/tested-head.txt
+          test -f Package.swift
+          test -d Sources
+          test -d Tests
+          test -x scripts/audit.sh
+          ! find . -maxdepth 1 -name 'bootstrap*' -print -quit | grep -q .
+          git diff --check
+      - name: Tests coverage audit CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test --parallel 2>&1 | tee /tmp/clg-final/tests.log
+          swift test --enable-code-coverage 2>&1 | tee /tmp/clg-final/coverage.log
+          ./scripts/audit.sh --skip-tests 2>&1 | tee /tmp/clg-final/audit.log
+          if grep -RInE --exclude-dir=.git --exclude-dir=.build \
+            '(^|[^A-Za-z])(killall[[:space:]]+codex|pkill[[:space:]].*-f[[:space:]].*codex)' .; then
+            exit 1
+          fi
+          BIN_PATH="$(swift build --show-bin-path)"
+          CLI="$(find "$BIN_PATH" -maxdepth 1 -type f -perm -111 -name 'codex-limit-guard' -print -quit)"
+          if [[ -z "$CLI" ]]; then
+            CLI="$(find "$BIN_PATH" -maxdepth 1 -type f -perm -111 -iname '*LimitGuard*CLI*' -print -quit)"
+          fi
+          test -n "$CLI"
+          "$CLI" --help >/tmp/clg-final/cli-help.txt
+          "$CLI" version >/tmp/clg-final/cli-version.txt
+          for iteration in $(seq 1 20); do
+            swift test --filter PolicyEngineTests >/dev/null
+            swift test --filter ProcessActionExecutorTests >/dev/null
+            swift test --filter ProcessSafetyTests >/dev/null
+          done
+      - name: Refuse stale source and record pass
+        shell: bash
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          tested="$(cat /tmp/clg-final/tested-head.txt)"
+          git fetch origin agent/russian-localization-hardening
+          latest="$(git rev-parse origin/agent/russian-localization-hardening)"
+          if [[ "$latest" != "$tested" ]]; then
+            changed="$(git diff --name-only "$tested..$latest")"
+            if echo "$changed" | grep -Ev '^(\.github/workflows/|docs/validation/)' | grep -q .; then
+              echo 'Source changed during validation' >&2
+              exit 1
+            fi
+            git rebase origin/agent/russian-localization-hardening
+          fi
+          summary="$(grep -Eo 'Executed [0-9]+ tests?' /tmp/clg-final/tests.log | tail -n1 || true)"
+          mkdir -p docs/validation
+          cat > docs/validation/REMOTE_FINAL_GATE_PASS.md <<EOF
+          # Final remote fast/medium gate — PASSED
+
+          - Tested source commit: \`$tested\`
+          - Evidence parent: \`$latest\`
+          - Run ID: \`$RUN_ID\`
+          - Swift: \`$(swift --version | head -n1)\`
+          - Completed UTC: \`$(date -u +%FT%TZ)\`
+          - Tests: \`${summary:-passed; see Actions log}\`
+          - Coverage build: passed
+          - Static audit: passed
+          - Broad kill scan: passed
+          - CLI smoke: passed
+          - Critical repetition: 20 × 3 suites passed
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/validation/REMOTE_FINAL_GATE_PASS.md
+          git diff --cached --check
+          git commit -m 'Record passed final remote fast medium gate'
+          for attempt in 1 2 3; do
+            if git push origin HEAD:agent/russian-localization-hardening; then exit 0; fi
+            git fetch origin agent/russian-localization-hardening
+            git rebase origin/agent/russian-localization-hardening
+            sleep $((attempt * 3))
+          done
+          exit 1
