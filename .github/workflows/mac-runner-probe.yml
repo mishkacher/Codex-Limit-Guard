@@ -1,19 +1,13 @@
 name: Mac runner transport probe
 
 on:
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: mac-runner-transport-probe-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
   probe:
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'agent/russian-localization-hardening'
     runs-on: [self-hosted, macOS, ARM64, backtest]
     timeout-minutes: 20
     steps:
