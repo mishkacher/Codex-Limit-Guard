@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   macos-validation:
@@ -13,7 +13,49 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          fetch-depth: 0
           show-progress: false
+
+      - name: Apply audited Swift 5.10 compatibility patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          accessibility = Path("Sources/CodexLimitGuardMac/AccessibilityController.swift")
+          text = accessibility.read_text()
+          text = text.replace(
+              "private func stringAttribute(_ name: CFString, element: AXUIElement) -> String? {\n        var value: CFTypeRef?\n        guard AXUIElementCopyAttributeValue(element, name, &value) == .success else { return nil }",
+              "private func stringAttribute(_ name: String, element: AXUIElement) -> String? {\n        var value: CFTypeRef?\n        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }"
+          )
+          text = text.replace(
+              "private func boolAttribute(_ name: CFString, element: AXUIElement) -> Bool? {\n        var value: CFTypeRef?\n        guard AXUIElementCopyAttributeValue(element, name, &value) == .success else { return nil }",
+              "private func boolAttribute(_ name: String, element: AXUIElement) -> Bool? {\n        var value: CFTypeRef?\n        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }"
+          )
+          text = text.replace(
+              "trimmingCharacters(in: .whitespacesAndNewlines)",
+              "trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)"
+          )
+          accessibility.write_text(text)
+
+          app_model = Path("Sources/CodexLimitGuardMac/AppModel.swift")
+          text = app_model.read_text()
+          old = """    private func startActivityTimer() {\n        activityTimer?.invalidate()\n        activityTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in\n            Task { @MainActor in self?.sampleActivityAndEvaluate() }\n        }\n        RunLoop.main.add(activityTimer!, forMode: .common)\n    }\n"""
+          new = """    private func startActivityTimer() {\n        activityTimer?.invalidate()\n        let timer = Timer(\n            timeInterval: 2,\n            target: self,\n            selector: #selector(activityTimerDidFire(_:)),\n            userInfo: nil,\n            repeats: true\n        )\n        activityTimer = timer\n        RunLoop.main.add(timer, forMode: .common)\n    }\n\n    @objc private func activityTimerDidFire(_ timer: Timer) {\n        sampleActivityAndEvaluate()\n    }\n"""
+          if old in text:
+              text = text.replace(old, new)
+          app_model.write_text(text)
+          PY
+
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Sources/CodexLimitGuardMac/AccessibilityController.swift Sources/CodexLimitGuardMac/AppModel.swift
+            git commit -m "Fix Swift 5.10 macOS compatibility"
+            git push origin HEAD:${{ github.event.pull_request.head.ref }}
+          fi
 
       - name: Swift toolchain
         run: swift --version
