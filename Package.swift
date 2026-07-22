@@ -1,6 +1,7 @@
 // swift-tools-version: 5.10
 import PackageDescription
 
+// Swift 5 language mode keeps the macOS 13+ target compatible with Xcode 15.4 and newer.
 var products: [Product] = [
     .library(name: "CodexLimitGuardCore", targets: ["CodexLimitGuardCore"])
 ]
