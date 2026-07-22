@@ -20,9 +20,20 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
+          show-progress: false
 
       - name: Reassemble and verify audited project tree
         run: bash bootstrap/publish.sh
+
+      - name: Publish gate diagnostics on failure
+        if: failure() && hashFiles('bootstrap/diagnostic.txt') != ''
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bootstrap/diagnostic.txt
+          git commit -m "Record publication gate diagnostics"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
 
       - name: Test core
         run: swift test --parallel
