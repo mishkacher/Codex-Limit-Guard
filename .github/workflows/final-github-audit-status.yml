@@ -1,0 +1,115 @@
+name: Final GitHub audit status
+
+on:
+  push:
+    branches: [agent/russian-localization-hardening]
+    paths: [.github/workflows/final-github-audit-status.yml]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: read
+
+jobs:
+  audit:
+    if: github.repository == 'mishkacher/Codex-Limit-Guard' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/russian-localization-hardening
+          fetch-depth: 0
+      - name: Audit repository and pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p docs/validation /tmp/clg-audit
+          git diff --check
+          test -f Package.swift
+          test -d Sources
+          test -d Tests
+          ! find . -maxdepth 1 -name 'bootstrap*' -print -quit | grep -q .
+          gh pr view 6 --repo "$GITHUB_REPOSITORY" \
+            --json number,state,isDraft,mergeable,mergeStateStatus,headRefName,baseRefName,headRefOid,url \
+            > /tmp/clg-audit/pr.json
+          gh pr diff 6 --repo "$GITHUB_REPOSITORY" > /tmp/clg-audit/pr.diff
+          test -s /tmp/clg-audit/pr.diff
+          if grep -RInE --exclude-dir=.git --exclude-dir=.build --exclude='*.md' \
+            '(sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|[0-9]{8,10}:[A-Za-z0-9_-]{30,})' .; then
+            echo 'Potential secret found' >&2
+            exit 1
+          fi
+          if grep -RInE --include='*.yml' --include='*.yaml' 'pull_request_target' .github/workflows; then
+            echo 'pull_request_target is forbidden' >&2
+            exit 1
+          fi
+          if grep -RInE --include='*.yml' --include='*.yaml' 'runs-on:[[:space:]]*self-hosted[[:space:]]*$' .github/workflows; then
+            echo 'Unqualified self-hosted runner selector found' >&2
+            exit 1
+          fi
+          for file in README.md ARCHITECTURE.md SECURITY.md PRIVACY.md CONTRIBUTING.md CHANGELOG.md TROUBLESHOOTING.md RELEASE.md LICENSE; do
+            test -s "$file" || { echo "Missing $file" >&2; exit 1; }
+          done
+      - name: Generate honest audit status
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote=absent
+          probe=absent
+          heavy=absent
+          [[ -s docs/validation/REMOTE_FINAL_GATE_PASS.md ]] && remote=present
+          [[ -s docs/validation/MAC_RUNNER_PROBE_V2_PASS.md ]] && probe=present
+          [[ -s docs/validation/MACOS_ARM64_HEAVY_V3_PASS.md ]] && heavy=present
+          verdict='GITHUB VALIDATION PENDING — MACOS HEAVY GATE NOT CONFIRMED'
+          if [[ "$remote" == present && "$heavy" == present ]]; then
+            verdict='CODEX LIMIT GUARD — RELEASE CANDIDATE, GITHUB VERIFIED'
+          fi
+          mergeable="$(python3 -c 'import json; print(json.load(open("/tmp/clg-audit/pr.json"))["mergeable"])')"
+          merge_state="$(python3 -c 'import json; print(json.load(open("/tmp/clg-audit/pr.json"))["mergeStateStatus"])')"
+          head="$(python3 -c 'import json; print(json.load(open("/tmp/clg-audit/pr.json"))["headRefOid"])')"
+          cat > docs/validation/FINAL_GITHUB_AUDIT_STATUS.md <<EOF
+          # Final GitHub audit status
+
+          **$verdict**
+
+          - Generated UTC: \`$(date -u +%FT%TZ)\`
+          - Audited PR: \`#6\`
+          - Head: \`$head\`
+          - Base: \`main\`
+          - Draft: \`true\`
+          - Mergeable: \`$mergeable\`
+          - Merge state: \`$merge_state\`
+          - Remote final gate marker: \`$remote\`
+          - Mac Runner probe marker: \`$probe\`
+          - macOS ARM64 heavy v3 marker: \`$heavy\`
+          - Diff check: passed
+          - Secret scan: passed
+          - Workflow security scan: passed
+          - Required public documentation: present
+          - Bootstrap transport files: absent
+
+          This audit cannot produce the GitHub-verified release-candidate verdict without both the final remote marker and the final macOS ARM64 heavy marker.
+          No merge or production release is authorized by this report.
+          EOF
+      - name: Commit audit status safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/validation/FINAL_GITHUB_AUDIT_STATUS.md
+          git diff --cached --check
+          git commit -m 'Record final GitHub audit status'
+          for attempt in 1 2 3; do
+            if git push origin HEAD:agent/russian-localization-hardening; then exit 0; fi
+            git fetch origin agent/russian-localization-hardening
+            git rebase origin/agent/russian-localization-hardening
+            sleep $((attempt * 2))
+          done
+          exit 1
