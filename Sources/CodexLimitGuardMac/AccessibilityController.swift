@@ -142,7 +142,7 @@ final class AccessibilityController {
             stringAttribute(kAXValueAttribute, element: element)
         ]
         return values
-            .compactMap { $0?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) }
+            .compactMap { $0?.lowercased().trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) }
             .contains { text in words.contains(text) || words.contains(where: { text.contains($0) }) }
     }
 
@@ -154,15 +154,15 @@ final class AccessibilityController {
         return value as? [AXUIElement] ?? []
     }
 
-    private func stringAttribute(_ name: CFString, element: AXUIElement) -> String? {
+    private func stringAttribute(_ name: String, element: AXUIElement) -> String? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name, &value) == .success else { return nil }
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
         return value as? String
     }
 
-    private func boolAttribute(_ name: CFString, element: AXUIElement) -> Bool? {
+    private func boolAttribute(_ name: String, element: AXUIElement) -> Bool? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name, &value) == .success else { return nil }
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
         return value as? Bool
     }
 

@@ -200,10 +200,19 @@ final class AppModel: ObservableObject {
 
     private func startActivityTimer() {
         activityTimer?.invalidate()
-        activityTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.sampleActivityAndEvaluate() }
-        }
-        RunLoop.main.add(activityTimer!, forMode: .common)
+        let timer = Timer(
+            timeInterval: 2,
+            target: self,
+            selector: #selector(activityTimerDidFire(_:)),
+            userInfo: nil,
+            repeats: true
+        )
+        activityTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    @objc private func activityTimerDidFire(_ timer: Timer) {
+        sampleActivityAndEvaluate()
     }
 
     private func sampleActivityAndEvaluate() {
