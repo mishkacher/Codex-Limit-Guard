@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core-tests:
+    name: Core tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.0"
+      - name: Test core
+        run: swift test --parallel
+      - name: Static safety audit
+        run: ./scripts/audit.sh --skip-tests
+
+  macos-build:
+    name: Native macOS validation
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show Swift toolchain
+        run: swift --version
+      - name: Test core and macOS target
+        run: swift test --parallel
+      - name: Run safety audit
+        run: ./scripts/audit.sh --skip-tests
+      - name: Build application bundle
+        run: ./scripts/build-app.sh
+      - name: Verify application bundle
+        run: ./scripts/verify-app.sh
+      - name: Upload application artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-Limit-Guard-macOS-${{ github.sha }}
+          path: dist/Codex-Limit-Guard-macOS.zip
+          if-no-files-found: error
+          retention-days: 14
