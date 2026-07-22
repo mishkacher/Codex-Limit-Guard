@@ -14,19 +14,60 @@ jobs:
       - uses: actions/checkout@v4
         with:
           show-progress: false
+
       - name: Swift toolchain
         run: swift --version
+
       - name: Test core and macOS target
-        run: swift test --parallel
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p diagnostics
+          swift test --parallel 2>&1 | tee diagnostics/swift-test.log
+
+      - name: Upload Swift diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-diagnostics
+          path: diagnostics/swift-test.log
+          if-no-files-found: error
+
       - name: Run security and architecture audit
-        run: ./scripts/audit.sh
-      - name: Build native app bundle
-        run: ./scripts/build-app.sh
-      - name: Verify app bundle
-        run: ./scripts/verify-app.sh
+        shell: bash
+        run: |
+          set -o pipefail
+          ./scripts/audit.sh 2>&1 | tee diagnostics/audit.log
+
+      - name: Upload audit diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-diagnostics
+          path: diagnostics/audit.log
+          if-no-files-found: ignore
+
+      - name: Build and verify native macOS app
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            ./scripts/build-app.sh
+            ./scripts/verify-app.sh
+          } 2>&1 | tee diagnostics/macos-build.log
+
       - name: Upload macOS artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Codex-Limit-Guard-macOS
           path: dist/Codex-Limit-Guard-macOS.zip
           if-no-files-found: error
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build-diagnostics
+          path: diagnostics/macos-build.log
+          if-no-files-found: ignore
