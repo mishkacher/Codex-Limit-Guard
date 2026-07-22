@@ -27,11 +27,10 @@ jobs:
           clean: true
 
       - name: Locate and verify source archive
-        id: archive
         shell: bash
         env:
           ARCHIVE_NAME: Codex-Limit-Guard-0.2.0-local-source.tar.gz
-          EXPECTED_SHA256: 1eeb92b6678b3738d43bb82a24b1cb174fe2f8ba627a3c8edb0bec7efae68351
+          EXPECTED_SHA256: 5d92ca84e2c8ecb80a22ddc8476131698ad5c386ba38c718f3a69c49dd650ae8
         run: |
           set -euo pipefail
           mkdir -p diagnostics
@@ -73,24 +72,12 @@ jobs:
           test -x scripts/audit.sh
           test -x scripts/release-bundle.sh
 
-      - name: Publish clean working tree
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Complete Russian localization and release hardening"
-          git push origin HEAD:agent/russian-localization-hardening
-          git rev-parse HEAD | tee /tmp/clean-sha.txt
-
       - name: Toolchain diagnostics
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p diagnostics
           {
-            echo "clean_sha=$(cat /tmp/clean-sha.txt)"
             sw_vers
             uname -a
             uname -m
@@ -152,6 +139,18 @@ jobs:
           mkdir -p diagnostics
           find dist local-release-bundle -type f -print0 2>/dev/null | sort -z | xargs -0 shasum -a 256 > diagnostics/artifact-sha256.txt || true
           git status --short > diagnostics/git-status.txt
+
+      - name: Publish validated clean working tree
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Complete Russian localization and release hardening"
+          git push origin HEAD:agent/russian-localization-hardening
+          git rev-parse HEAD | tee diagnostics/clean-sha.txt
 
       - name: Upload macOS validation evidence
         if: always()
