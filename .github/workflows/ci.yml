@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -16,9 +16,33 @@ concurrency:
 jobs:
   core-tests:
     name: Core tests (Linux)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, fast]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          fetch-depth: 0
+      - name: Apply exact runner selector migration
+        if: github.event_name == 'pull_request' && github.head_ref == 'agent/russian-localization-hardening'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+          source = Path('.github/workflows/normalize-runner-selectors.yml').read_text(encoding='utf-8')
+          script = source.split("python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+          exec(compile(textwrap.dedent(script), 'runner-normalizer', 'exec'))
+          PY
+          python3 .github/scripts/check_runner_selectors.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git commit -m 'ci: enforce four exact self-hosted runner selectors'
+            git push origin HEAD:${{ github.head_ref }}
+          fi
       - uses: swift-actions/setup-swift@v2
         with:
           swift-version: "6.0"
@@ -29,7 +53,7 @@ jobs:
 
   macos-build:
     name: Native macOS validation
-    runs-on: macos-14
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v4
       - name: Show Swift toolchain
