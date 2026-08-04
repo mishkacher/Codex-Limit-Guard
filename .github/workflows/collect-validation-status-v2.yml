@@ -1,0 +1,63 @@
+name: Collect validation status v2
+
+on:
+  push:
+    branches: [agent/russian-localization-hardening]
+    paths: [.github/workflows/collect-validation-status-v2.yml]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: write
+
+jobs:
+  collect:
+    if: github.repository == 'mishkacher/Codex-Limit-Guard' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/russian-localization-hardening
+          fetch-depth: 0
+      - name: Query runs and markers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p docs/validation
+          gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/runs?branch=agent%2Frussian-localization-hardening&per_page=100" \
+            --jq '.workflow_runs[] | [.id,.name,.status,(.conclusion // "null"),.head_sha,.run_attempt,.created_at,.updated_at,.html_url] | @tsv' \
+            > /tmp/runs.tsv
+          {
+            echo '# GitHub validation status snapshot v2'
+            echo
+            echo "- Generated UTC: \`$(date -u +%FT%TZ)\`"
+            echo "- Branch HEAD: \`$(git rev-parse HEAD)\`"
+            for marker in REMOTE_FAST_MEDIUM_PASS REMOTE_FAST_MEDIUM_V3_PASS MAC_RUNNER_PROBE_V2_PASS MACOS_ARM64_HEAVY_PASS; do
+              path="docs/validation/${marker}.md"
+              echo "- ${marker}: \`$([[ -s "$path" ]] && echo present || echo absent)\`"
+            done
+            echo
+            echo '| Run ID | Workflow | Status | Conclusion | Head | Attempt | Created | Updated | URL |'
+            echo '|---:|---|---|---|---|---:|---|---|---|'
+            awk -F '\t' '$2 ~ /(Restore verified|fast|medium|macOS|Mac runner|CI|Collect validation)/ {
+              printf "| %s | %s | %s | %s | `%s` | %s | %s | %s | %s |\n", $1,$2,$3,$4,$5,$6,$7,$8,$9
+            }' /tmp/runs.tsv
+          } > docs/validation/ACTIONS_STATUS_V2.md
+      - name: Commit and comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/validation/ACTIONS_STATUS_V2.md
+          git diff --cached --check
+          git commit -m 'Record GitHub validation status snapshot v2'
+          git push origin HEAD:agent/russian-localization-hardening
+          gh pr comment 6 --repo "$GITHUB_REPOSITORY" --body-file docs/validation/ACTIONS_STATUS_V2.md

@@ -1,0 +1,48 @@
+name: Публикация русской версии
+
+on:
+  push:
+    paths:
+      - bootstrap/READY
+      - bootstrap/chunk-*
+      - .github/workflows/bootstrap-russian.yml
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Восстановить и проверить проект
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_b64="$(awk -F= '/^base64_sha256=/{print $2}' bootstrap/READY)"
+          expected_archive="$(awk -F= '/^archive_sha256=/{print $2}' bootstrap/READY)"
+          expected_chunks="$(awk -F= '/^chunks=/{print $2}' bootstrap/READY)"
+          actual_chunks="$(find bootstrap -name 'chunk-*' -type f | wc -l | tr -d ' ')"
+          test "$actual_chunks" = "$expected_chunks"
+          cat bootstrap/chunk-* > /tmp/project.tar.gz.b64
+          test "$(sha256sum /tmp/project.tar.gz.b64 | awk '{print $1}')" = "$expected_b64"
+          base64 --decode /tmp/project.tar.gz.b64 > /tmp/project.tar.gz
+          test "$(sha256sum /tmp/project.tar.gz | awk '{print $1}')" = "$expected_archive"
+          tar -xzf /tmp/project.tar.gz -C .
+          rm -rf bootstrap .github/workflows/bootstrap-russian.yml
+      - name: Проверить проект
+        run: |
+          swift test --parallel
+          ./scripts/audit.sh --skip-tests
+      - name: Опубликовать чистое дерево
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Русифицировать и усилить Codex Limit Guard"
+          git push origin HEAD:${GITHUB_REF_NAME}

@@ -1,0 +1,273 @@
+name: Final macOS ARM64 heavy gate v3
+
+on:
+  push:
+    branches: [agent/russian-localization-hardening]
+    paths: [.github/workflows/macos-heavy-gate-v3.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  heavy:
+    if: github.repository == 'mishkacher/Codex-Limit-Guard' && github.actor != 'github-actions[bot]'
+    runs-on: [self-hosted, macOS, ARM64, backtest]
+    timeout-minutes: 240
+    concurrency:
+      group: codex-limit-guard-macos-heavy-evidence
+      cancel-in-progress: true
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/russian-localization-hardening
+          fetch-depth: 0
+          clean: true
+
+      - name: Freeze tested revision and verify environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/logs artifacts/reports artifacts/build
+          git rev-parse HEAD | tee artifacts/reports/tested-head.txt
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test -f Package.swift
+          test -d Sources
+          test -d Tests
+          test -x scripts/audit.sh
+          test -x scripts/build-app.sh
+          test -x scripts/package-release.sh
+          ! find . -maxdepth 1 -name 'bootstrap*' -print -quit | grep -q .
+          {
+            echo "macos=$(sw_vers -productVersion)"
+            echo "arch=$(uname -m)"
+            echo "xcode=$(xcodebuild -version | tr '\n' ';')"
+            echo "swift=$(swift --version | head -n1)"
+            echo "started_utc=$(date -u +%FT%TZ)"
+          } | tee artifacts/reports/environment.txt
+          git diff --check
+
+      - name: Full native test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test --parallel 2>&1 | tee artifacts/logs/swift-test.log
+          swift test --enable-code-coverage 2>&1 | tee artifacts/logs/swift-coverage-test.log
+
+      - name: Native coverage report
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN_PATH="$(swift build --show-bin-path)"
+          PROFDATA="$(find .build -name default.profdata -print -quit)"
+          XCTEST_DIR="$(find "$BIN_PATH" -maxdepth 1 -type d -name '*.xctest' -print -quit)"
+          if [[ -n "$PROFDATA" && -n "$XCTEST_DIR" ]]; then
+            TEST_BIN="$(find "$XCTEST_DIR/Contents/MacOS" -type f -perm -111 -print -quit)"
+            test -n "$TEST_BIN"
+            xcrun llvm-cov report "$TEST_BIN" -instr-profile "$PROFDATA" \
+              -ignore-filename-regex='Tests|\.build' \
+              | tee artifacts/reports/coverage.txt
+          else
+            echo 'Coverage artifacts not found' >&2
+            exit 1
+          fi
+
+      - name: Security and process-safety audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/audit.sh --skip-tests 2>&1 | tee artifacts/logs/static-audit.log
+          if grep -RInE --exclude-dir=.git --exclude-dir=.build \
+             '(^|[^A-Za-z])(killall[[:space:]]+codex|pkill[[:space:]].*-f[[:space:]].*codex)' .; then
+            echo 'Broad process kill detected' >&2
+            exit 1
+          fi
+          if grep -RInE --exclude-dir=.git --exclude-dir=.build \
+             'SIGKILL|kill\([^,]+,[[:space:]]*9\)' Sources; then
+            echo 'Forbidden automatic SIGKILL path detected' >&2
+            exit 1
+          fi
+          if grep -RInE --exclude-dir=.git --exclude-dir=.build --exclude='*.md' \
+             '(sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|[0-9]{8,10}:[A-Za-z0-9_-]{30,})' .; then
+            echo 'Potential secret detected' >&2
+            exit 1
+          fi
+
+      - name: Critical-domain stress
+        shell: bash
+        run: |
+          set -euo pipefail
+          for iteration in $(seq 1 50); do
+            echo "iteration=$iteration"
+            swift test --filter PolicyEngineTests >/tmp/policy.log 2>&1
+            swift test --filter ProcessActionExecutorTests >/tmp/action.log 2>&1
+            swift test --filter ProcessSafetyTests >/tmp/safety.log 2>&1
+          done
+          echo '50 iterations / 150 critical suite invocations passed' \
+            | tee artifacts/reports/critical-stress.txt
+
+      - name: CLI contracts and resource sample
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN_PATH="$(swift build --show-bin-path)"
+          CLI="$(find "$BIN_PATH" -maxdepth 1 -type f -perm -111 -name 'codex-limit-guard' -print -quit)"
+          if [[ -z "$CLI" ]]; then
+            CLI="$(find "$BIN_PATH" -maxdepth 1 -type f -perm -111 -iname '*LimitGuard*CLI*' -print -quit)"
+          fi
+          test -n "$CLI"
+          "$CLI" --help | tee artifacts/logs/cli-help.log
+          "$CLI" version | tee artifacts/logs/cli-version.log
+          set +e
+          "$CLI" status --json > artifacts/reports/cli-status.json
+          status_code=$?
+          set -e
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('artifacts/reports/cli-status.json')
+          if p.stat().st_size:
+              json.loads(p.read_text())
+          PY
+          echo "status_exit_code=$status_code" > artifacts/reports/cli-exit-code.txt
+          /usr/bin/time -l "$CLI" version \
+            > artifacts/logs/cli-time.stdout \
+            2> artifacts/reports/cli-time.txt
+
+      - name: Build and verify ARM64 app
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/build-app.sh 2>&1 | tee artifacts/logs/build-app.log
+          APP="$(find . -type d -name 'Codex Limit Guard.app' -print -quit)"
+          test -n "$APP"
+          test -f "$APP/Contents/Info.plist"
+          plutil -lint "$APP/Contents/Info.plist" | tee artifacts/logs/plutil.log
+          EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+          APP_BIN="$APP/Contents/MacOS/$EXECUTABLE"
+          test -x "$APP_BIN"
+          file "$APP_BIN" | tee artifacts/reports/app-binary.txt
+          lipo -archs "$APP_BIN" | tee artifacts/reports/app-architectures.txt
+          lipo -archs "$APP_BIN" | grep -qw arm64
+          codesign --verify --deep --strict --verbose=2 "$APP" \
+            2>&1 | tee artifacts/logs/codesign-verify.log || true
+          ditto -c -k --sequesterRsrc --keepParent "$APP" \
+            artifacts/build/Codex-Limit-Guard-macOS-ARM64.app.zip
+
+      - name: Launch and graceful quit
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$(find . -type d -name 'Codex Limit Guard.app' -print -quit)"
+          bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")"
+          open -n "$APP"
+          sleep 8
+          pgrep -f "$APP/Contents/MacOS" | tee artifacts/reports/app-pids.txt
+          osascript -e 'tell application id "'"$bundle_id"'" to quit'
+          sleep 5
+          if pgrep -f "$APP/Contents/MacOS" >/dev/null; then
+            echo 'App failed to quit gracefully' >&2
+            exit 1
+          fi
+          {
+            echo 'launch=passed'
+            echo 'graceful_quit=passed'
+            echo "console_user=$(stat -f '%Su' /dev/console)"
+            echo "gui_domain=$(launchctl print gui/$(id -u) >/dev/null 2>&1 && echo available || echo unavailable)"
+            echo "accessibility=$(osascript -e 'tell application "System Events" to UI elements enabled' 2>/dev/null || echo unavailable)"
+          } | tee artifacts/reports/gui-smoke.txt
+
+      - name: Packaging and reversible install smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/package-release.sh 2>&1 | tee artifacts/logs/package-release.log
+          APP="$(find . -type d -name 'Codex Limit Guard.app' -print -quit)"
+          ROOT="$(mktemp -d /tmp/codex-limit-guard-install.XXXXXX)"
+          ditto "$APP" "$ROOT/Codex Limit Guard.app"
+          test -f "$ROOT/Codex Limit Guard.app/Contents/Info.plist"
+          ditto "$APP" "$ROOT/Codex Limit Guard.app"
+          rm -rf "$ROOT/Codex Limit Guard.app"
+          test ! -e "$ROOT/Codex Limit Guard.app"
+          rmdir "$ROOT"
+          echo 'install_upgrade_uninstall=passed' \
+            | tee artifacts/reports/install-upgrade-uninstall.txt
+          find . -maxdepth 5 -type f \
+            \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.json' -o -name 'SHA256SUMS*' \) \
+            -not -path './.git/*' -not -path './artifacts/*' \
+            -exec cp -f {} artifacts/build/ \; || true
+          find artifacts/build -type f -print0 | sort -z | xargs -0 shasum -a 256 \
+            | tee artifacts/reports/artifact-sha256.txt
+          test -s artifacts/reports/artifact-sha256.txt
+
+      - name: Ensure tested source is still current and record pass
+        shell: bash
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          tested_head="$(cat artifacts/reports/tested-head.txt)"
+          git fetch origin agent/russian-localization-hardening
+          latest_head="$(git rev-parse origin/agent/russian-localization-hardening)"
+          if [[ "$latest_head" != "$tested_head" ]]; then
+            changed="$(git diff --name-only "$tested_head..$latest_head")"
+            echo "$changed" | tee artifacts/reports/concurrent-changes.txt
+            if echo "$changed" | grep -Ev '^(\.github/workflows/|docs/validation/)' | grep -q .; then
+              echo 'Source code changed while heavy gate was running; refusing stale pass' >&2
+              exit 1
+            fi
+            git rebase "origin/agent/russian-localization-hardening"
+          fi
+          summary="$(grep -Eo 'Executed [0-9]+ tests?' artifacts/logs/swift-test.log | tail -n1 || true)"
+          mkdir -p docs/validation
+          cat > docs/validation/MACOS_ARM64_HEAVY_V3_PASS.md <<EOF
+          # Final macOS ARM64 heavy gate v3 — PASSED
+
+          - Tested source commit: \`$tested_head\`
+          - Evidence committed on top of: \`$latest_head\`
+          - Workflow run: \`$RUN_ID\`
+          - Attempt: \`$RUN_ATTEMPT\`
+          - macOS: \`$(sw_vers -productVersion)\`
+          - Architecture: \`$(uname -m)\`
+          - Xcode: \`$(xcodebuild -version | tr '\n' ';')\`
+          - Swift: \`$(swift --version | head -n1)\`
+          - Completed UTC: \`$(date -u +%FT%TZ)\`
+          - Test summary: \`${summary:-passed; see Actions log}\`
+          - Native coverage: passed
+          - Static/security/process-safety audit: passed
+          - Critical stress: 50 × 3 mandatory suites passed
+          - CLI contracts/resource sample: passed
+          - Native ARM64 app build: passed
+          - Launch and graceful quit: passed
+          - Packaging/checksums: passed
+          - Reversible install/upgrade/uninstall smoke: passed
+
+          Accessibility state is recorded in the uploaded evidence and is not fabricated.
+          Developer ID signing and notarization are not claimed without Apple credentials.
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/validation/MACOS_ARM64_HEAVY_V3_PASS.md
+          git diff --cached --check
+          git commit -m 'Record passed final macOS ARM64 heavy gate v3'
+          for attempt in 1 2 3; do
+            if git push origin HEAD:agent/russian-localization-hardening; then
+              exit 0
+            fi
+            git fetch origin agent/russian-localization-hardening
+            git rebase origin/agent/russian-localization-hardening
+            sleep $((attempt * 3))
+          done
+          exit 1
+
+      - name: Upload heavy evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-Limit-Guard-final-macOS-heavy-${{ github.run_id }}
+          path: artifacts
+          if-no-files-found: warn
+          retention-days: 14

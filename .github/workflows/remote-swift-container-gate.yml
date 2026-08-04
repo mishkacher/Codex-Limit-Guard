@@ -1,0 +1,87 @@
+name: Remote Swift 6 container gate
+
+on:
+  push:
+    branches: [agent/russian-localization-hardening]
+    paths: [.github/workflows/remote-swift-container-gate.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  swift-container:
+    if: github.repository == 'mishkacher/Codex-Limit-Guard' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    container: swift:6.0-jammy
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/russian-localization-hardening
+          fetch-depth: 0
+          clean: true
+      - name: Preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift --version
+          test -f Package.swift
+          test -d Sources
+          test -d Tests
+          test -x scripts/audit.sh
+          ! find . -maxdepth 1 -name 'bootstrap*' -print -quit | grep -q .
+          git diff --check
+      - name: Tests and coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/clg-container
+          swift test --parallel 2>&1 | tee /tmp/clg-container/tests.log
+          swift test --enable-code-coverage 2>&1 | tee /tmp/clg-container/coverage.log
+      - name: Audit and CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/audit.sh --skip-tests 2>&1 | tee /tmp/clg-container/audit.log
+          if grep -RInE --exclude-dir=.git --exclude-dir=.build \
+            '(^|[^A-Za-z])(killall[[:space:]]+codex|pkill[[:space:]].*-f[[:space:]].*codex)' .; then
+            exit 1
+          fi
+          BIN_PATH="$(swift build --show-bin-path)"
+          CLI="$(find "$BIN_PATH" -maxdepth 1 -type f -perm -111 -name 'codex-limit-guard' -print -quit)"
+          if [[ -z "$CLI" ]]; then
+            CLI="$(find "$BIN_PATH" -maxdepth 1 -type f -perm -111 -iname '*LimitGuard*CLI*' -print -quit)"
+          fi
+          test -n "$CLI"
+          "$CLI" --help >/tmp/clg-container/cli-help.txt
+          "$CLI" version >/tmp/clg-container/cli-version.txt
+      - name: Record pass
+        shell: bash
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          tested="$(git rev-parse HEAD)"
+          summary="$(grep -Eo 'Executed [0-9]+ tests?' /tmp/clg-container/tests.log | tail -n1 || true)"
+          mkdir -p docs/validation
+          cat > docs/validation/REMOTE_SWIFT6_CONTAINER_PASS.md <<EOF
+          # Remote Swift 6 container validation — PASSED
+
+          - Tested commit: \`$tested\`
+          - Run ID: \`$RUN_ID\`
+          - Swift: \`$(swift --version | head -n1)\`
+          - Completed UTC: \`$(date -u +%FT%TZ)\`
+          - Tests: \`${summary:-passed; see Actions log}\`
+          - Coverage build: passed
+          - Static audit: passed
+          - Broad kill scan: passed
+          - CLI smoke: passed
+          EOF
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/validation/REMOTE_SWIFT6_CONTAINER_PASS.md
+          git diff --cached --check
+          git commit -m 'Record passed Swift 6 container validation'
+          git push origin HEAD:agent/russian-localization-hardening

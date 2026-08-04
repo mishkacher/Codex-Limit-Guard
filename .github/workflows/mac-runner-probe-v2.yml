@@ -1,0 +1,61 @@
+name: Mac runner probe v2
+
+on:
+  push:
+    branches: [agent/russian-localization-hardening]
+    paths: [.github/workflows/mac-runner-probe-v2.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    if: github.repository == 'mishkacher/Codex-Limit-Guard' && github.actor != 'github-actions[bot]'
+    runs-on: [self-hosted, macOS, ARM64, backtest]
+    timeout-minutes: 15
+    concurrency:
+      group: codex-limit-guard-mac-probe-v2
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/russian-localization-hardening
+          fetch-depth: 0
+          clean: true
+      - name: Verify environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          swift --version
+          test -f Package.swift
+          test -d Sources
+          test -d Tests
+      - name: Record probe pass
+        shell: bash
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          tested="$(git rev-parse HEAD)"
+          mkdir -p docs/validation
+          cat > docs/validation/MAC_RUNNER_PROBE_V2_PASS.md <<EOF
+          # Mac Runner probe v2 — PASSED
+
+          - Tested branch head: \`$tested\`
+          - Run ID: \`$RUN_ID\`
+          - macOS: \`$(sw_vers -productVersion)\`
+          - Architecture: \`$(uname -m)\`
+          - Xcode: \`$(xcodebuild -version | tr '\n' ';')\`
+          - Swift: \`$(swift --version | head -n1)\`
+          - Completed UTC: \`$(date -u +%FT%TZ)\`
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/validation/MAC_RUNNER_PROBE_V2_PASS.md
+          git diff --cached --check
+          git commit -m 'Record passed Mac Runner probe v2'
+          git push origin HEAD:agent/russian-localization-hardening

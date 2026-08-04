@@ -1,0 +1,66 @@
+name: Restore verified local release candidate
+
+on:
+  push:
+    branches:
+      - agent/russian-localization-hardening
+    paths:
+      - .github/workflows/restore-verified-source.yml
+
+permissions:
+  contents: write
+
+env:
+  ARCHIVE_URL: https://drive.usercontent.google.com/download?id=1fqpshWCLVKyoiHCX8X8yTN9PL72SYL3F&export=download&confirm=t
+  ARCHIVE_SHA256: 1eeb92b6678b3738d43bb82a24b1cb174fe2f8ba627a3c8edb0bec7efae68351
+
+jobs:
+  restore:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/russian-localization-hardening
+          fetch-depth: 0
+          clean: true
+
+      - name: Download and verify exact source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --retry-all-errors \
+            --connect-timeout 20 --max-time 180 \
+            "$ARCHIVE_URL" -o /tmp/Codex-Limit-Guard-source.tar.gz
+          actual_sha="$(sha256sum /tmp/Codex-Limit-Guard-source.tar.gz | awk '{print $1}')"
+          echo "archive_sha256=$actual_sha"
+          test "$actual_sha" = "$ARCHIVE_SHA256"
+          tar -tzf /tmp/Codex-Limit-Guard-source.tar.gz >/tmp/archive-file-list.txt
+          test -s /tmp/archive-file-list.txt
+
+      - name: Restore clean source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf -- {} +
+          tar -xzf /tmp/Codex-Limit-Guard-source.tar.gz --strip-components=1 -C .
+          test -f Package.swift
+          test -f README.md
+          test -x scripts/audit.sh
+          test -x scripts/build-app.sh
+          test -x scripts/package-release.sh
+          test -d Sources
+          test -d Tests
+          test -z "$(find . -maxdepth 1 -name 'bootstrap*' -print -quit)"
+
+      - name: Commit exact verified tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Restore verified Codex Limit Guard release candidate"
+          git push origin HEAD:agent/russian-localization-hardening

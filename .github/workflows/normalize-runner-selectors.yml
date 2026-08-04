@@ -1,0 +1,206 @@
+name: Normalize runner selectors once
+
+on:
+  push:
+    branches:
+      - agent/russian-localization-hardening
+    paths:
+      - .github/workflows/normalize-runner-selectors.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  normalize:
+    runs-on: [self-hosted, fast]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/russian-localization-hardening
+          fetch-depth: 0
+
+      - name: Normalize all workflow selectors
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          import re
+          from pathlib import Path
+
+          root = Path('.')
+          workflows = root / '.github/workflows'
+          one_shot = workflows / 'normalize-runner-selectors.yml'
+          job_re = re.compile(r'^  [A-Za-z0-9_.-]+:\s*(?:#.*)?$')
+          runs_re = re.compile(r'^(?P<indent>\s*)runs-on:\s*(?P<value>.*)$')
+
+          def choose(block: str, current: str) -> str:
+              low = (block + '\n' + current).lower()
+              if any(token in low for token in (
+                  'macos', 'xcodebuild', 'sw_vers', 'osascript', 'codesign',
+                  'lipo ', 'plutil', 'open -n', 'darwin',
+              )):
+                  return '[self-hosted, macOS, ARM64]'
+              if any(token in low for token in (
+                  'container:', 'services:', 'docker', 'docker compose',
+                  'docker-compose', 'podman',
+              )):
+                  return '[self-hosted, docker]'
+              if 'backtest' in low or 'backtester' in low:
+                  return '[self-hosted, backtester]'
+              return '[self-hosted, fast]'
+
+          def normalize(path: Path) -> None:
+              lines = path.read_text(encoding='utf-8').splitlines()
+              output: list[str] = []
+              i = 0
+              while i < len(lines):
+                  if not job_re.match(lines[i]):
+                      output.append(lines[i]); i += 1; continue
+                  end = i + 1
+                  while end < len(lines) and not job_re.match(lines[end]):
+                      if lines[end] and not lines[end].startswith((' ', '#')):
+                          break
+                      end += 1
+                  block = lines[i:end]
+                  block_text = '\n'.join(block)
+                  rewritten: list[str] = []
+                  j = 0
+                  while j < len(block):
+                      match = runs_re.match(block[j])
+                      if not match:
+                          rewritten.append(block[j]); j += 1; continue
+                      indent = match.group('indent')
+                      parts = [match.group('value').strip()]
+                      k = j + 1
+                      if not parts[0]:
+                          while k < len(block):
+                              line = block[k]
+                              line_indent = len(line) - len(line.lstrip())
+                              if line.strip() and line_indent <= len(indent):
+                                  break
+                              if line.strip().startswith('-'):
+                                  parts.append(line.strip())
+                              k += 1
+                      rewritten.append(f"{indent}runs-on: {choose(block_text, ' '.join(parts))}")
+                      j = k
+                  output.extend(rewritten)
+                  i = end
+              path.write_text('\n'.join(output) + '\n', encoding='utf-8')
+
+          for path in sorted(workflows.glob('*.y*ml')):
+              if path != one_shot:
+                  normalize(path)
+
+          replacements = {
+              '[self-hosted, docker, Linux, X64]': '[self-hosted, docker]',
+              '[self-hosted, Linux, ARM64]': '[self-hosted, fast]',
+              '[self-hosted, macOS, ARM64, backtest]': '[self-hosted, macOS, ARM64]',
+              '[self-hosted, macOS, ARM64, backtester]': '[self-hosted, macOS, ARM64]',
+              '[self-hosted, fast, docker]': '[self-hosted, docker]',
+              '[self-hosted, backtest]': '[self-hosted, backtester]',
+          }
+          for path in root.rglob('*'):
+              if not path.is_file() or '.git' in path.parts or path == one_shot:
+                  continue
+              try:
+                  text = path.read_text(encoding='utf-8')
+              except (UnicodeError, OSError):
+                  continue
+              updated = text
+              for old, new in replacements.items():
+                  updated = updated.replace(old, new)
+              if updated != text:
+                  path.write_text(updated, encoding='utf-8')
+
+          checker = root / '.github/scripts/check_runner_selectors.py'
+          checker.parent.mkdir(parents=True, exist_ok=True)
+          checker.write_text('''#!/usr/bin/env python3
+from __future__ import annotations
+import re
+import sys
+from pathlib import Path
+ALLOWED = {
+    "[self-hosted, fast]",
+    "[self-hosted, docker]",
+    "[self-hosted, backtester]",
+    "[self-hosted, macOS, ARM64]",
+}
+RUNS_ON = re.compile(r"^\\s+runs-on:\\s*(?P<value>.*?)\\s*(?:#.*)?$")
+errors = []
+for path in sorted(Path(".github/workflows").glob("*.y*ml")):
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        match = RUNS_ON.match(line)
+        if match and match.group("value") not in ALLOWED:
+            errors.append(f"{path}:{number}: forbidden runs-on selector {match.group('value')!r}")
+if errors:
+    print("Only four exact self-hosted runner selectors are allowed:", file=sys.stderr)
+    for error in errors:
+        print(f"- {error}", file=sys.stderr)
+    raise SystemExit(1)
+print("Runner selector policy passed.")
+''', encoding='utf-8')
+
+          (workflows / 'self-hosted-runner-policy.yml').write_text('''name: Self-hosted runner selector policy
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - '.github/scripts/check_runner_selectors.py'
+      - '.github/RUNNER_LABELS.md'
+  push:
+    paths:
+      - '.github/workflows/**'
+      - '.github/scripts/check_runner_selectors.py'
+      - '.github/RUNNER_LABELS.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  enforce:
+    runs-on: [self-hosted, fast]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: python3 .github/scripts/check_runner_selectors.py
+''', encoding='utf-8')
+
+          (root / '.github/RUNNER_LABELS.md').write_text('''# Canonical self-hosted runner selectors
+
+Every GitHub Actions job with `runs-on` must use exactly one selector:
+
+```yaml
+runs-on: [self-hosted, fast]
+runs-on: [self-hosted, docker]
+runs-on: [self-hosted, backtester]
+runs-on: [self-hosted, macOS, ARM64]
+```
+
+No other labels or GitHub-hosted runners are permitted.
+''', encoding='utf-8')
+          one_shot.unlink()
+          PY
+
+      - name: Verify exact selector set
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/check_runner_selectors.py
+          python3 -m py_compile .github/scripts/check_runner_selectors.py
+
+      - name: Commit normalized workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'ci: enforce four exact self-hosted runner selectors'
+          git push origin HEAD:agent/russian-localization-hardening
